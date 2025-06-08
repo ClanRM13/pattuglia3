@@ -1,0 +1,439 @@
+﻿<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Scopri la tua pattuglia!</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap">
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background:#000; }
+
+    /* Prompt di rotazione (mostrato solo in verticale) */
+    #rotateOverlay {
+      position: absolute;
+      inset: 0;
+      background: #000;
+      color: #ff0;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 6vw;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2vw;
+      z-index: 99;
+    }
+    @media (orientation: portrait) {
+      canvas, #overlay, #touchControls, #jumpBtn { display: none !important; }
+      #rotateOverlay { display: flex; }
+    }
+
+    /* Canvas: verrà ridimensionato via JS per mantenere 4:3 */
+    /* ② Rimuovi width/height/aspect-ratio dal canvas */
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ③ Wrapper centrato e letterboxabile */
+#gameContainer {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 800px;          /* dimensioni logiche del gioco */
+  height: 600px;
+  transform-origin: top left;
+}
+
+/* ④ Il resto (overlay, pulsanti, ecc.) può restare uguale */
+
+
+    /* Overlay testuale iniziale / di game‑over / di vittoria */
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-size: clamp(12px,4vw,28px);
+      color: #ff0;
+      backdrop-filter: blur(4px);
+      white-space: pre-line;
+      z-index: 2;
+      font-family: 'Press Start 2P', monospace;
+      text-shadow: 2px 2px #ffa500;
+    }
+    #logo { max-width: 30vw; margin-bottom: 2vh; display: none; }
+
+    /* Sfondo menu iniziale */
+    body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: url('backgroundmenu.png') center/cover no-repeat;
+      z-index: 1;
+    }
+    body.game-started::before { display: none; }
+
+    /* Pulsanti touch: visibili in landscape su mobile */
+    #touchControls {
+      position: absolute;
+      bottom: 8vh;
+      left: 5vw;
+      display: flex;
+      gap: 5vw;
+      z-index: 3;
+    }
+    #touchControls button,
+    #jumpBtn {
+      width: 16vw;
+      height: 16vw;
+      max-width: 80px;
+      max-height: 80px;
+      font-size: 4vw;
+      font-family: 'Press Start 2P', monospace;
+      background: rgba(255,255,255,0.8);
+      border: 2px solid #ffa500;
+      border-radius: 12px;
+      box-shadow: 0 0 6px #ffa500;
+      color: #000;
+      touch-action: none;
+      user-select: none;
+    }
+    #jumpBtn {
+      position: absolute;
+      bottom: 8vh;
+      right: 5vw;
+      z-index: 3;
+    }
+  </style>
+</head>
+</head>
+<body>
+  <div id="rotateOverlay">Ruota il dispositivo<br>in orizzontale per giocare!</div>
+
+  <div id="gameContainer">
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  </div>
+
+  <div id="overlay" style="display:none;">
+    <img id="logo" src="logo.png" alt="Logo">
+    <div id="overlayText"></div>
+  </div>
+
+  <div id="touchControls">
+    <button id="leftBtn">←</button>
+    <button id="rightBtn">→</button>
+  </div>
+  <button id="jumpBtn">↑</button>
+
+  <audio id="bgMusic" src="musica.mp3" loop></audio>
+  <audio id="hitSound" src="bounch.mp3"></audio>
+  <audio id="winnerSound" src="winner.mp3"></audio>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById('gameCanvas');
+      const ctx = canvas.getContext('2d');
+      const overlay = document.getElementById('overlay');
+      const overlayText = document.getElementById('overlayText');
+      const logo = document.getElementById('logo');
+      const hitSound = document.getElementById('hitSound');
+
+      const imgBackground = new Image(); imgBackground.src = 'background.png';
+      const imgPlayerRight = new Image(); imgPlayerRight.src = 'player.png';
+      const imgPlayerLeft = new Image(); imgPlayerLeft.src = 'player2.png';
+      const imgScarpa = new Image(); imgScarpa.src = 'scarpa.png';
+      const imgRover = new Image(); imgRover.src = 'rover1.png';
+
+      const bossLeftImages = [null, new Image(), new Image(), new Image()];
+      bossLeftImages[1].src = 'boss12.png';
+      bossLeftImages[2].src = 'boss2.png';
+      bossLeftImages[3].src = 'boss3.png';
+
+      const bossRightImages = [null, new Image(), new Image(), new Image()];
+      bossRightImages[1].src = 'boss1.png';
+      bossRightImages[2].src = 'boss22.png';
+      bossRightImages[3].src = 'boss32.png';
+
+      const keys = {};
+      window.addEventListener('keydown', e => {
+        keys[e.code] = true;
+        if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) 
+          e.preventDefault();
+      });
+      window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+      /* =============================================================
+         TOUCH / POINTER CONTROLS
+         ============================================================= */
+      const leftBtn = document.getElementById('leftBtn');
+      const rightBtn = document.getElementById('rightBtn');
+      const jumpBtn = document.getElementById('jumpBtn');
+
+      const setKey = (code, state) => { keys[code] = state; };
+
+      // movement buttons
+      leftBtn.addEventListener('touchstart', () => setKey('ArrowLeft', true));
+      leftBtn.addEventListener('touchend', () => setKey('ArrowLeft', false));
+      rightBtn.addEventListener('touchstart', () => setKey('ArrowRight', true));
+      rightBtn.addEventListener('touchend', () => setKey('ArrowRight', false));
+      jumpBtn.addEventListener('touchstart', () => { if (player.onGround) setKey('Space', true); });
+      jumpBtn.addEventListener('touchend',   () => setKey('Space', false));
+
+      /* =============================================================
+         NUOVO AVVIO ANCHE DA TOUCH
+         ============================================================= */
+      const startGameOnce = () => {
+        const music = document.getElementById('bgMusic');
+        if (music && music.paused) music.play().catch(() => {});
+        if (!running) waitAssetsThenStart();
+      };
+
+      // "once" garantisce che parta solo la prima volta
+      ['keydown', 'touchstart', 'pointerdown', 'mousedown'].forEach(evt => {
+        window.addEventListener(evt, startGameOnce, { once: true, passive: evt === 'touchstart' ? false : true });
+      });
+
+      const GRAVITY = 0.6;
+      const JUMP_FORCE = 16;
+
+      class Player {
+        constructor() {
+          this.w = 60; this.h = 90;
+          this.x = 100; this.y = canvas.height - this.h - 10;
+          this.vy = 0; this.speed = 5; this.onGround = false; this.direction = 'right';
+        }
+        update() {
+          if (keys['ArrowLeft'] && this.x > 0) { this.x -= this.speed; this.direction = 'left'; }
+          if (keys['ArrowRight'] && this.x + this.w < canvas.width) { this.x += this.speed; this.direction = 'right'; }
+          if ((keys['ArrowUp']||keys['Space']) && this.onGround) { this.vy = -JUMP_FORCE; this.onGround = false; }
+          this.vy += GRAVITY; this.y += this.vy;
+          const groundY = canvas.height - this.h - 10;
+          if (this.y >= groundY) { this.y = groundY; this.vy = 0; this.onGround = true; }
+          keys['Space'] = false;
+        }
+        draw() {
+          const img = this.direction === 'left' ? imgPlayerLeft : imgPlayerRight;
+          if (img.complete && img.naturalWidth) 
+            ctx.drawImage(img, this.x, this.y, this.w, this.h);
+          else {
+            ctx.fillStyle = 'lime';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+          }
+        }
+      }
+
+      class Scarpa {
+        constructor(x, y, dir) {
+          this.w = 48; this.h = 48;
+          this.x = x - this.w/2; this.y = y - this.h/2;
+          const dxVar = Math.random()*1.5 - 0.75;
+          const dyVar = Math.random()*1.5 - 0.75;
+          this.dx = dir * 8 + dxVar;
+          this.dy = -10 + dyVar;
+          this.gravity = 0.2; this.active = true;
+        }
+        update() {
+          this.dy += this.gravity; this.x += this.dx; this.y += this.dy;
+          if (this.x < -this.w || this.x > canvas.width || this.y > canvas.height) 
+            this.active = false;
+        }
+        draw() {
+          if (imgScarpa.complete && imgScarpa.naturalWidth) 
+            ctx.drawImage(imgScarpa, this.x, this.y, this.w, this.h);
+          else {
+            ctx.fillStyle = 'brown';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+          }
+        }
+        collidesWith(p) {
+          return (
+            this.x < p.x + p.w &&
+            this.x + this.w > p.x &&
+            this.y < p.y + p.h &&
+            this.y + this.h > p.y
+          );
+        }
+      }
+
+      class Boss {
+        constructor(level) {
+          this.level = level;
+          this.w = 150; this.h = 150;
+          this.x = canvas.width - this.w - 100;
+          this.y = canvas.height - this.h - 10;
+          this.dx = 2 + level; this.vy = 0; this.onGround = true;
+          this.maxHp = (level === 3 ? 3 : 3 + level);
+          this.hp = this.maxHp;
+          this.invincibleTimer = 0;
+          this.jumpCooldown = 0;
+          this.hitCount = 0;
+        }
+        update() {
+          this.x += this.dx;
+          if (this.x <= 0 || this.x + this.w >= canvas.width) this.dx *= -1;
+          this.vy += GRAVITY; this.y += this.vy;
+          const groundY = canvas.height - this.h - 10;
+          if (this.y >= groundY) {
+            this.y = groundY; this.vy = 0; this.onGround = true;
+          } else this.onGround = false;
+
+          if (this.level === 2 && this.onGround) {
+            this.jumpCooldown--;
+            if (this.jumpCooldown <= 0) { this.vy = -12; this.jumpCooldown = 120; }
+          }
+          if (this.level === 3) {
+            if (Math.random() < 0.01) this.dx *= -1;
+            if (this.onGround && Math.random() < 0.02) this.vy = -12;
+          }
+
+          if ((this.level === 1 && this.hp <= this.maxHp/2) || (this.hitCount >= (this.level===3?1:2))) {
+            if (scarpaAttiva === null) {
+              const dir = this.dx < 0 ? -1 : 1;
+              scarpaAttiva = new Scarpa(this.x + this.w/2, this.y + this.h/2, dir);
+              this.hitCount = 0;
+            }
+          }
+
+          if (this.invincibleTimer > 0) this.invincibleTimer--;
+        }
+        draw() {
+          const img = this.dx < 0 ? bossLeftImages[this.level] : bossRightImages[this.level];
+          if (img.complete && img.naturalWidth) ctx.drawImage(img, this.x, this.y, this.w, this.h);
+          else { ctx.fillStyle = 'red'; ctx.fillRect(this.x, this.y, this.w, this.h); }
+          const hpW = this.w * (this.hp / this.maxHp);
+          ctx.fillStyle = 'darkred'; ctx.fillRect(this.x, this.y - 10, this.w, 5);
+          ctx.fillStyle = 'lime'; ctx.fillRect(this.x, this.y - 10, hpW, 5);
+        }
+      }
+
+      let level = 1, MAX_LEVEL = 3;
+      let player = new Player(), boss = new Boss(level), scarpaAttiva = null, running = false;
+
+      function resetLevel() {
+        player = new Player(); boss = new Boss(level); scarpaAttiva = null;
+      }
+
+      function showOverlay(text, duration=2000, callback, showLogo=false) {
+        overlayText.textContent = text;
+        overlay.style.display = 'flex'; logo.style.display = showLogo ? 'block' : 'none';
+        if (duration > 0) {
+          setTimeout(() => { overlay.style.display = 'none'; if (callback) callback(); }, duration);
+        }
+      }
+
+      function showVictoryAndAdvance() {
+        const winnerSound = document.getElementById('winnerSound'); if (winnerSound) winnerSound.play().catch(()=>{});
+        const names = {1:'Lorenzo Can.',2:'Stefano',3:'Pattuglia da 2!'};
+        imgRover.src = `rover${level}.png`;
+        showOverlay(`Hai liberato ${names[level]}!`,2000,()=>{
+          let roverX = canvas.width + 120;
+          const roverY = canvas.height - 120, roverW = 120, roverH = 120;
+          running = true;
+          function animateRover() {
+            if (!running) return;
+            if (imgBackground.complete) ctx.drawImage(imgBackground,0,0,canvas.width,canvas.height);
+            else { ctx.fillStyle='#000'; ctx.fillRect(0,0,canvas.width,canvas.height); }
+            player.draw(); boss.draw(); if (imgRover.complete) ctx.drawImage(imgRover,roverX,roverY,roverW,roverH);
+            roverX -= 5;
+            if (roverX + roverW > 0) requestAnimationFrame(animateRover);
+            else { level++; if (level>MAX_LEVEL) showOverlay('🎉 Complimenti!\nHai completato il gioco!',0);
+                   else { resetLevel(); running=true; requestAnimationFrame(gameLoop); } }
+          }
+          requestAnimationFrame(animateRover);
+        });
+      }
+
+      function collisionRect(a,b) { return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y; }
+      function handlePlayerBossCollision() {
+        if (!collisionRect(player,boss)) return;
+        const topHit = player.vy>0 && player.y+player.h-player.vy <= boss.y+10;
+        if (topHit && boss.invincibleTimer===0) {
+          boss.hp--; boss.invincibleTimer=30; boss.hitCount++;
+          player.vy = -JUMP_FORCE*0.8; player.y = boss.y-player.h-1;
+          boss.dx = -Math.abs(boss.dx*1.1);
+          hitSound.currentTime=0; hitSound.play().catch(()=>{});
+        } else if (!topHit && boss.invincibleTimer===0) {
+          running=false;
+          showOverlay('Sei stato sconfitto!\nRiprova...',2000,()=>{ resetLevel(); running=true; requestAnimationFrame(gameLoop); });
+        }
+      }
+
+      function gameLoop() {
+        if (!running) return;
+        if (imgBackground.complete) ctx.drawImage(imgBackground,0,0,canvas.width,canvas.height);
+        else { ctx.fillStyle='#111'; ctx.fillRect(0,0,canvas.width,canvas.height); }
+        player.update(); boss.update(); handlePlayerBossCollision();
+        if (scarpaAttiva) {
+          scarpaAttiva.update();
+          if (scarpaAttiva.collidesWith(player)) {
+            running=false;
+            showOverlay('Lo scarpone ti ha colpito!\nRiprova...',2000,()=>{ resetLevel(); running=true; requestAnimationFrame(gameLoop); });
+          }
+          scarpaAttiva.draw(); if (!scarpaAttiva.active) scarpaAttiva=null;
+        }
+        player.draw(); boss.draw();
+        if (boss.hp<=0) { running=false; showVictoryAndAdvance(); return; }
+        requestAnimationFrame(gameLoop);
+      }
+
+      function assetsReady() {
+        return imgPlayerRight.complete && imgPlayerLeft.complete &&
+               bossLeftImages[1].complete && bossLeftImages[2].complete && bossLeftImages[3].complete &&
+               bossRightImages[1].complete && bossRightImages[2].complete && bossRightImages[3].complete &&
+               imgBackground.complete && imgScarpa.complete && imgRover.complete && logo.complete;
+      }
+
+      /* ⑤ Funzione di resize – da aggiungere in fondo alla IIFE prima di waitAssetsThenStart() */
+function resizeGameArea () {
+  const container = document.getElementById('gameContainer');
+
+  // fattore di scala massimo che preserva il 4:3
+  const scale = Math.min(
+      window.innerWidth  / 800,
+      window.innerHeight / 600
+  );
+
+  // metà della dimensione *dopo* la scala = quanto va spostato all’indietro
+  const tx = -400 * scale;   // 800/2
+  const ty = -300 * scale;   // 600/2
+
+  container.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+}
+
+window.addEventListener('resize', resizeGameArea);
+window.addEventListener('orientationchange', resizeGameArea);
+resizeGameArea();   // prima chiamata subito
+
+window.addEventListener('resize', resizeGameArea);
+window.addEventListener('orientationchange', resizeGameArea);
+resizeGameArea();   // chiamata subito all’avvio
+
+
+      function waitAssetsThenStart() {
+        if (assetsReady()) {
+          document.body.classList.add('game-started'); overlay.style.display='none'; running=true; requestAnimationFrame(gameLoop);
+        } else setTimeout(waitAssetsThenStart,100);
+      }
+      window.addEventListener('keydown',()=>{ const music=document.getElementById('bgMusic'); if(music && music.paused) music.play().catch(()=>{}); if (!running) waitAssetsThenStart(); },{once:true});
+      showOverlay('Caricamento...');
+
+const startTime = Date.now();
+
+const preloadCheck = setInterval(() => {
+  const elapsed = Date.now() - startTime;
+
+  if (assetsReady() && elapsed >= 5000) {
+    clearInterval(preloadCheck);
+    showOverlay('Premi un tasto per iniziare\n← → per muoverti, Spazio/↑ per saltare', 0, null, true);
+  }
+}, 100);
+
+    })();
+  </script>
+</body>
+</html>
