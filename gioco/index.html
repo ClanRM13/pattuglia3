@@ -328,7 +328,7 @@ canvas {
 
       function showVictoryAndAdvance() {
         const winnerSound = document.getElementById('winnerSound'); if (winnerSound) winnerSound.play().catch(()=>{});
-        const names = {1:'Lorenzo Can.',2:'Stefano',3:'Pattuglia da 2!'};
+        const names = {1:'Lorenzo Can.',2:'Stefano',3:'...no! pattuglia da 2!'};
         imgRover.src = `rover${level}.png`;
         showOverlay(`Hai liberato ${names[level]}!`,2000,()=>{
           let roverX = canvas.width + 120;
